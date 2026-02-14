@@ -25,6 +25,16 @@ pub enum API {
     SendPrivateText {
         user_id: usize,
         content: String
+    },
+    UploadGroupFile {
+        group_id: usize,
+        file: String,
+        name: String
+    },
+    UploadPrivateFile {
+        user_id: usize,
+        file: String,
+        name: String
     }
 }
 
@@ -35,6 +45,10 @@ pub enum APIResponse {
         /// The id of the message sent that can be used for recalling.
         /// Sould be `0` if `success` is `false`
         message_id: usize
+    },
+    UploadFileResult {
+        success: bool,
+        file_id: String
     },
     GroupInfo(Group),
     UserInfo(User),
@@ -66,6 +80,18 @@ impl APIError {
     }
     pub fn channel_receive(e: RecvError) -> Self {
         Self::ChannelReceive(e.to_string())
+    }
+}
+
+impl From<SendError<APIRequest>> for APIError {
+    fn from(value: SendError<APIRequest>) -> Self {
+        Self::channel_send(value)
+    }
+}
+
+impl From<RecvError> for APIError {
+    fn from(value: RecvError) -> Self {
+        Self::channel_receive(value)
     }
 }
 
@@ -104,8 +130,8 @@ impl APIWrapper {
         self.sender.send(APIRequest {
             api: API::SendGroupMsg { group_id, content },
             resp_tx: tx
-        }).map_err(|e| APIError::channel_send(e))?;
-        match rx.await.map_err(|e| APIError::channel_receive(e))? {
+        })?;
+        match rx.await? {
             APIResponse::SendMsgResult { success, message_id } => {
                 if success { Ok(message_id) }
                 else { Err(APIError::RequestFailed) }
@@ -120,8 +146,8 @@ impl APIWrapper {
         self.sender.send(APIRequest {
             api: API::SendPrivateMsg { user_id, content },
             resp_tx: tx
-        }).map_err(|e| APIError::channel_send(e))?;
-        match rx.await.map_err(|e| APIError::channel_receive(e))? {
+        })?;
+        match rx.await? {
             APIResponse::SendMsgResult { success, message_id } => {
                 if success { Ok(message_id) }
                 else { Err(APIError::RequestFailed) }
@@ -136,8 +162,8 @@ impl APIWrapper {
         self.sender.send(APIRequest {
             api: API::SendGroupText { group_id, content: content.to_string() },
             resp_tx: tx
-        }).map_err(|e| APIError::channel_send(e))?;
-        match rx.await.map_err(|e| APIError::channel_receive(e))? {
+        })?;
+        match rx.await? {
             APIResponse::SendMsgResult { success, message_id } => {
                 if success { Ok(message_id) }
                 else { Err(APIError::RequestFailed) }
@@ -152,10 +178,42 @@ impl APIWrapper {
         self.sender.send(APIRequest {
             api: API::SendPrivateText { user_id, content: content.to_string() },
             resp_tx: tx
-        }).map_err(|e| APIError::channel_send(e))?;
-        match rx.await.map_err(|e| APIError::channel_receive(e))? {
+        })?;
+        match rx.await? {
             APIResponse::SendMsgResult { success, message_id } => {
                 if success { Ok(message_id) }
+                else { Err(APIError::RequestFailed) }
+            }
+            APIResponse::Error { message } => Err(APIError::APIError(message)),
+            _ => Err(APIError::MismatchedResponse)
+        }
+    }
+
+    pub async fn upload_group_file(&self, group_id: usize, file: &str, name: &str) -> Result<String, APIError> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(APIRequest {
+            api: API::UploadGroupFile { group_id, file: file.to_string(), name: name.to_string() },
+            resp_tx: tx
+        })?;
+        match rx.await? {
+            APIResponse::UploadFileResult { success, file_id } => {
+                if success { Ok(file_id) }
+                else { Err(APIError::RequestFailed) }
+            }
+            APIResponse::Error { message } => Err(APIError::APIError(message)),
+            _ => Err(APIError::MismatchedResponse)
+        }
+    }
+
+    pub async fn upload_private_file(&self, user_id: usize, file: &str, name: &str) -> Result<String, APIError> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(APIRequest {
+            api: API::UploadPrivateFile { user_id, file: file.to_string(), name: name.to_string() },
+            resp_tx: tx
+        })?;
+        match rx.await? {
+            APIResponse::UploadFileResult { success, file_id } => {
+                if success { Ok(file_id) }
                 else { Err(APIError::RequestFailed) }
             }
             APIResponse::Error { message } => Err(APIError::APIError(message)),

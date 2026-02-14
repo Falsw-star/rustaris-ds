@@ -86,13 +86,23 @@ impl Message {
         false
     }
 
-    pub async fn quick_send(&self, content: &str) {
+    pub async fn quick_send_text(&self, content: &str) -> bool {
         if self.private {
-            let _ = get_poster().send_private_text(self.sender.user_id, content).await;
+            get_poster().send_private_text(self.sender.user_id, content).await.is_ok()
         } else {
             if let Some(group) = &self.group {
-                let _ = get_poster().send_group_text(group.group_id, content).await;
-            }
+                get_poster().send_group_text(group.group_id, content).await.is_ok()
+            } else { false }
+        }
+    }
+
+    pub async fn quick_send_msg(&self, content: Vec<MessageArrayItem>) -> bool {
+        if self.private {
+            get_poster().send_private_msg(self.sender.user_id, content).await.is_ok()
+        } else {
+            if let Some(group) = &self.group {
+                get_poster().send_group_msg(group.group_id, content).await.is_ok()
+            } else { false }
         }
     }
 

@@ -4,7 +4,7 @@ use rust_mc_status::{McClient, ServerEdition};
 use serde_json::{Value, json};
 
 use async_trait::async_trait;
-use crate::{get_logger, memory::{MemoryService, Scope}, objects::Message};
+use crate::{get_logger, get_poster, memory::{MemoryService, Scope}, objects::{Message, MessageArrayItem}};
 
 
 
@@ -290,26 +290,143 @@ impl Tool for MCSTool {
                     "type": "string",
                     "description": "服务器的地址"
                 },
-                "is_java": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "待查服务器是否为 java 端。true则为java端，false则为bedrock端"
+                "edition": {
+                    "type": "string",
+                    "enum": ["java", "bedrock"],
+                    "default": "java",
+                    "description": "待查服务器的版本类型"
                 }
             },
-            "required": ["address", "is_java"]
+            "required": ["address"]
         })
     }
 
     async fn call(&self, args: Value, _msg: &Message) -> anyhow::Result<Value> {
         let address = extract!(args, "address", as_str);
-        let is_java = extract!(args, "is_java", as_bool);
+        let edition = extract_optional!(args, "edition", as_str).unwrap_or("java".to_string());
 
         let status = self.client.ping(
             &address.trim(),
-            if is_java { ServerEdition::Java }
-            else { ServerEdition::Bedrock }
+            match edition.as_str() {
+                "java" => ServerEdition::Java,
+                "bedrock" => ServerEdition::Bedrock,
+                _ => ServerEdition::Java
+            }
         ).await?;
 
         Ok(Value::String(serde_json::to_string(&status)?))
+    }
+}
+
+pub struct NeteaseMusicTool {
+    client: reqwest::Client,
+    api_root: String
+}
+
+impl NeteaseMusicTool {
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            client: reqwest::ClientBuilder::new()
+                .timeout(Duration::from_secs(10))
+                .build()?,
+            api_root: "http://192.168.3.38:8099".to_string()
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for NeteaseMusicTool {
+    fn name(&self) -> &str {
+        "netease_music"
+    }
+
+    fn description(&self) -> &str {
+        "解析网易云音乐的歌曲并将对应信息转发到群中"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "歌曲的id，由用户直接告知或包含在歌曲分享链接`?id=`之后，由数字组成"
+                },
+                "quality": {
+                    "type": "string",
+                    "enum": ["standard", "exhigh", "lossless"],
+                    "default": "standard",
+                    "description": "歌曲的音质。可选值：standard(标准)，exhigh(高品)，lossless(无损)",
+                },
+                "send_cover": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "是否仅向用户发送歌曲专辑封面。如果用户同时要歌曲和封面，则应调用本工具两次，分别设send_cover为true和false"
+                },
+                "as_file": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "是否将歌曲作为文件发送。当用户索要原始链接时，应设为false"
+                }
+            },
+            "required": ["id"]
+        })
+    }
+
+    async fn call(&self, args: Value, msg: &Message) -> anyhow::Result<Value> {
+
+        let id = extract!(args, "id", as_str).parse::<usize>()?;
+        let quality = extract_optional!(args, "quality", as_str).unwrap_or("standard".to_string());
+
+        let send_cover = extract_optional!(args, "send_cover", as_bool).unwrap_or(false);
+        let as_file = extract_optional!(args, "as_file", as_bool).unwrap_or(true);
+
+        let info = self.client.post(format!("{}/info", self.api_root))
+            .json(&json!({
+                "id": id
+            })).send().await?.json::<Value>().await?;
+        let name = sanitize_filename::sanitize(extract!(info, "name", as_str));
+
+        if send_cover {
+            let cover_url = extract!(extract!(info, "album", as_object), "cover_url", as_str);
+            if msg.quick_send_msg(vec![MessageArrayItem::Image { summary: None, file: None, url: cover_url, file_size: None }]).await {
+                return Ok(Value::String(format!("发送 {} 成功", name)));
+            } else {
+                return Ok(Value::String(format!("发送 {} 失败", name)));
+            }
+        }
+
+        let audio = self.client.post(format!("{}/audio", self.api_root))
+            .json(&json!({
+                "id": id,
+                "quality": quality
+            })).send().await?.json::<Value>().await?;
+        let url = extract!(audio, "url", as_str);
+        let encoding = extract!(audio, "encoding", as_str);
+        let file_name = format!("{}.{}", name, encoding);
+
+        let send_result = if as_file {
+            if msg.private {
+                match get_poster().upload_private_file(msg.sender.user_id, &url, &file_name).await {
+                    Ok(_id) => format!("发送 {} 成功", file_name),
+                    Err(err) => format!("发送 {} 失败: {}", file_name, err.to_string())
+                }
+            } else {
+                if let Some(group) = &msg.group {
+                    match get_poster().upload_group_file(group.group_id, &url, &file_name).await {
+                        Ok(_id) => format!("发送 {} 成功", file_name),
+                        Err(err) => format!("发送 {} 失败: {}", file_name, err.to_string())
+                    }
+                } else { "Missing group".to_string() }
+            }
+        } else {
+            if msg.quick_send_text(&format!("Song: {}\nurl: {}", file_name, url)).await {
+                format!("发送 {} 成功", file_name)
+            } else {
+                format!("发送 {} 失败", file_name)
+            }
+        };
+
+        Ok(Value::String(send_result))
     }
 }

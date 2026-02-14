@@ -112,6 +112,48 @@ impl PosterNapCat {
                     }
                 }
             }
+            API::UploadGroupFile { group_id, file, name } => {
+                match self.post("upload_group_file", json!({
+                    "group_id": group_id,
+                    "file": file,
+                    "name": name
+                })).await {
+                    Ok(res) => {
+                        let _ = req.resp_tx.send(APIResponse::from_res(res, |mut map| {
+                            Ok(APIResponse::UploadFileResult {
+                                success: match extract!(map, "status", as_str).as_str() {
+                                    "ok" => true, _ => false
+                                },
+                                file_id: extract!(extract!(map, "data", as_object), "file_id", as_str)
+                            })
+                        }));
+                    }
+                    Err(err) => {
+                        let _ = req.resp_tx.send(err.into());
+                    }
+                }
+            }
+            API::UploadPrivateFile { user_id, file, name } => {
+                match self.post("upload_private_file", json!({
+                    "user_id": user_id,
+                    "file": file,
+                    "name": name
+                })).await {
+                    Ok(res) => {
+                        let _ = req.resp_tx.send(APIResponse::from_res(res, |mut map| {
+                            Ok(APIResponse::UploadFileResult {
+                                success: match extract!(map, "status", as_str).as_str() {
+                                    "ok" => true, _ => false
+                                },
+                                file_id: extract!(extract!(map, "data", as_object), "file_id", as_str)
+                            })
+                        }));
+                    }
+                    Err(err) => {
+                        let _ = req.resp_tx.send(err.into());
+                    }
+                }
+            }
         }
     }
 

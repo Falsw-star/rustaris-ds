@@ -61,6 +61,7 @@ mod tests {
     use super::*;
     use rust_mc_status::McClient;
     use rustaris_ds::memory::{MemoryService, Scope};
+    use serde_json::Value;
     use tokio;
 
     #[tokio::test]
@@ -84,6 +85,21 @@ mod tests {
         let status = client.ping("alive.falsw.top", rust_mc_status::ServerEdition::Java).await?;
 
         println!("{}", serde_json::to_string(&status)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_netease() -> anyhow::Result<()> {
+        let link = "http://192.168.3.38:8099/info".to_string();
+        let client = reqwest::Client::new();
+
+        let info = client.post(link)
+            .json(&serde_json::json!({
+                "id": 114514
+            })).send().await?.json::<Value>().await?;
+        
+        println!("{:?}", info);
+
         Ok(())
     }
 }

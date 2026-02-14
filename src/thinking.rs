@@ -4,7 +4,7 @@ use deepseek_api::{CompletionsRequestBuilder, DeepSeekClient, DeepSeekClientBuil
 use serde_json::{Value, json};
 
 use tokio::{select, spawn, sync::mpsc::{UnboundedReceiver, UnboundedSender}, task::JoinHandle, time::{Instant, sleep}};
-use crate::{get_logger, get_poster, memory::MemoryService, objects::{Message, User}, self_id, tools::{MCSTool, SaveMemoryTool, SearchMemoryTool, ToolRegistry}};
+use crate::{get_logger, get_poster, memory::MemoryService, objects::{Message, User}, self_id, tools::{MCSTool, NeteaseMusicTool, SaveMemoryTool, SearchMemoryTool, ToolRegistry}};
 
 const SCORE_MAP: &[(&str, usize)] = &[
     ("rustaris", 40),
@@ -48,6 +48,7 @@ impl Thinker {
         tools.register(SaveMemoryTool { mem_service: mem_service.clone() });
         tools.register(SearchMemoryTool { mem_service: mem_service.clone() });
         tools.register(MCSTool::new());
+        tools.register(NeteaseMusicTool::new()?);
 
         Ok(Self {
             client: DeepSeekClientBuilder::new(std::env::var("API_KEY")?).build()?,
@@ -148,7 +149,6 @@ impl Thinker {
                                         &call.function.arguments,
                                         &message
                                     ).await;
-                                    println!("{:?}", result);
                                     messages.push(MessageRequest::Assistant(assistant_msg.clone()));
                                     let tool_msg = serde_json::from_value(result)?;
                                     if let MessageRequest::Tool(tool_msg) = &tool_msg {
