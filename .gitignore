@@ -1,0 +1,6 @@
+/target
+/test_scripts
+*.json
+/.idea
+.env
+.VSCodeCounter
