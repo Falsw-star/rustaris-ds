@@ -2,7 +2,7 @@ use std::{collections::VecDeque};
 
 use serde::{Serialize};
 
-use crate::get_poster;
+use crate::{get_poster, self_id};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Clone)]
 pub enum Permission {
@@ -55,7 +55,7 @@ pub struct Message {
     pub group: Option<Group>,
     pub sender: User,
     pub raw: String,
-    pub array: Vec<MessageArrayItem>
+    pub array: Vec<MessageArrayItem>,
 }
 
 impl Message {
@@ -126,7 +126,8 @@ impl Message {
 
         for item in &self.array {
             let str_item = match item {
-                MessageArrayItem::At(user_id) => format!("@<{}>", user_id),
+                MessageArrayItem::At(user_id) => format!(
+                    "@<{}>", if *user_id == self_id() { "Rustaris".to_string() } else { user_id.to_string() }),
                 MessageArrayItem::Face(_id) => "".to_string(),
                 MessageArrayItem::Image {
                     summary,

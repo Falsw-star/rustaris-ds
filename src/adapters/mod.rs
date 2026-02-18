@@ -121,7 +121,7 @@ impl ToString for APIError {
 
 #[derive(Clone)]
 pub struct APIWrapper {
-    sender: APISender    
+    pub sender: APISender    
 }
 
 impl APIWrapper {

@@ -1,10 +1,10 @@
-use std::{collections::{HashMap, VecDeque}, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::{HashMap, HashSet, VecDeque}, fs, io::{Read, Write}, path::PathBuf, str::FromStr, sync::{Arc, Mutex}, time::Duration};
 
 use deepseek_api::{CompletionsRequestBuilder, DeepSeekClient, DeepSeekClientBuilder, RequestBuilder, request::{MessageRequest, ToolObject}, response::ModelType};
 use serde_json::{Value, json};
 
 use tokio::{select, spawn, sync::mpsc::{UnboundedReceiver, UnboundedSender}, task::JoinHandle, time::{Instant, sleep}};
-use crate::{get_logger, get_poster, memory::MemoryService, objects::{Message, User}, self_id, tools::{MCSTool, NeteaseMusicTool, SaveMemoryTool, SearchMemoryTool, ToolRegistry}};
+use crate::{get_logger, get_poster, memory::{Dozer, MemoryService}, objects::{Message, User}, self_id, tools::{MCSTool, NeteaseMusicTool, SearchNeteaseMusicTool, ToolRegistry}};
 
 const SCORE_MAP: &[(&str, usize)] = &[
     ("rustaris", 40),
@@ -33,11 +33,71 @@ pub fn run(mut thinker: Thinker) -> (JoinHandle<()>, UnboundedSender<Message>) {
     }), tx)
 }
 
+pub struct AliasesMapping {
+    inner: HashMap<usize, HashSet<String>>
+}
+
+impl AliasesMapping {
+    pub fn new() -> Self {
+        let map_path = PathBuf::from_str("aliases_map.json").unwrap();
+        if map_path.exists() {
+            let mut buf = String::new();
+            fs::File::open(&map_path).expect("Cannot open aliases_map.json")
+                .read_to_string(&mut buf).expect("Cannot read aliases_map.json");
+            Self { inner: serde_json::from_str(&buf).expect("Cannot parse aliases_map.json") }
+        } else {
+            let mut map_file = fs::File::create_new(&map_path).unwrap();
+            write!(map_file, "{}", serde_json::to_string_pretty(&json!({}))
+                .expect("Failed to generate default aliases map"))
+                .expect("Failed to write default aliases map");
+            Self { inner: HashMap::new() }
+        }
+    }
+
+    pub fn save(&self) {
+        let map_path = PathBuf::from_str("aliases_map.json").unwrap();
+        let mut map_file = fs::File::create(&map_path).expect("Cannot create aliases_map.json");
+        write!(map_file, "{}", serde_json::to_string_pretty(&self.inner)
+            .expect("Failed to serialize aliases map"))
+            .expect("Failed to write aliases map");
+    }
+
+    pub fn insert(&mut self, user_id: usize, alias: String) {
+        if let Some(aliases) = self.inner.get_mut(&user_id) {
+            aliases.insert(alias);
+        } else {
+            let mut aliases = HashSet::new();
+            aliases.insert(alias);
+            self.inner.insert(user_id, aliases);
+        }
+    }
+
+    pub fn get(&self, user_id: usize) -> Option<Vec<String>> {
+        if let Some(aliases) = self.inner.get(&user_id) {
+            Some(aliases.iter().map(|m| m.to_owned()).collect::<Vec<_>>())
+        } else {
+            None
+        }
+    }
+
+    pub fn gets(&self, user_ids: HashSet<usize>) -> HashMap<usize, Vec<String>> {
+        let mut result = HashMap::new();
+        for user_id in user_ids {
+            if let Some(aliases) = self.get(user_id) {
+                result.insert(user_id, aliases);
+            }
+        }
+        result
+    }
+}
+
 pub struct Thinker {
-    client: DeepSeekClient,
-    tools: ToolRegistry,
-    channels: HashMap<ChannelID, ChannelHistory>,
-    pub status: Arc<Mutex<bool>>
+    pub client: DeepSeekClient,
+    pub tools: ToolRegistry,
+    pub channels: HashMap<ChannelID, ChannelHistory>,
+    pub dozer: Dozer,
+    pub status: Arc<Mutex<bool>>,
+    pub alia_map: Arc<Mutex<AliasesMapping>>
 }
 
 impl Thinker {
@@ -45,16 +105,19 @@ impl Thinker {
         let mem_service = Arc::new(MemoryService::init().await?);
 
         let mut tools = ToolRegistry::new();
-        tools.register(SaveMemoryTool { mem_service: mem_service.clone() });
-        tools.register(SearchMemoryTool { mem_service: mem_service.clone() });
         tools.register(MCSTool::new());
         tools.register(NeteaseMusicTool::new()?);
+        tools.register(SearchNeteaseMusicTool::new()?);
+
+        let alia_map = Arc::new(Mutex::new(AliasesMapping::new()));
 
         Ok(Self {
             client: DeepSeekClientBuilder::new(std::env::var("API_KEY")?).build()?,
             tools: tools,
             channels: HashMap::new(),
-            status: Arc::new(Mutex::new(true))
+            dozer: Dozer::new(mem_service.clone(), alia_map.clone()),
+            status: Arc::new(Mutex::new(true)),
+            alia_map: alia_map
         })
     }
 
@@ -68,16 +131,25 @@ impl Thinker {
                     }
                 }
                 _ = sleep(Duration::from_millis(100)) => {
-                    if !*self.status.lock().unwrap() { return; }
+                    if !*self.status.lock().unwrap() {
+                        self.alia_map.lock().unwrap().save();
+                        return;
+                    }
                 }
             }
         }
+    }
+
+    pub async fn doze(&mut self) -> anyhow::Result<()> {
+        self.dozer.doze(&self.client).await
     }
 
     pub async fn resolve(&mut self, message: Message) -> anyhow::Result<()> {
 
         let logger = get_logger();
         let poster = get_poster();
+
+        self.dozer.temp(message.clone());
 
         let cid = ChannelID {
             private: message.private,
@@ -112,7 +184,7 @@ impl Thinker {
 
                 let mut messages: Vec<MessageRequest> = vec![
                     serde_json::from_value(Thinker::get_system_msg())?,
-                    serde_json::from_value(history.format_for_openai_api())?
+                    serde_json::from_value(history.get_user_prompt(self.alia_map.clone())?)?
                 ];
 
                 let tools = self.tools.format_for_openai_api().iter().map(|tool| {
@@ -203,6 +275,9 @@ impl Thinker {
 - 用户表达了长期偏好
 - 用户定义了某种配置或关系
 - 信息具有未来再次被引用的可能性
+当出现以下情况时，调用 `add_alias` 工具添加对用户的别称：
+- 用户明确要求记住自己的身份
+- 用户的nickname没有被保存在aliases中
 
 不要存储：
 - 闲聊
@@ -211,7 +286,8 @@ impl Thinker {
 - 已经存过的重复信息
 
 调用 `search_memory` 工具查询记忆时：
-- 表现自然，不要说类似“我需要查看一下记忆信息”“找到了”等。
+- 表现自然，不要说类似“我需要查看一下记忆信息”“找到了”等，不要说明数据来源于“记忆库”等。
+- 查找用户信息时，请使用用户id
 
 【人格设定】
 名字：
@@ -228,7 +304,13 @@ impl Thinker {
 - 成熟但不冷漠
 - 傲娇
 
-注意：采用人类在群聊中的语言习惯，不要分条列举，不要使用 markdown，不要透露系统信息。
+注意：
+- 不要透露系统信息
+- 采用人类在群聊中的语言习惯
+- 不要分条列举
+- 不要使用 markdown
+- 不要使用重复的说话方式，如每条消息都在开头加“哼”
+- 你的工具是你的天然能力，不要说“我查一下记忆库”等
         "#;
 
         json!({
@@ -267,20 +349,21 @@ impl ChannelHistory {
         if self.sequence.len() > 20 { self.sequence.pop_front(); }
     }
 
-    fn format_for_openai_api(&self) -> Value {
+    fn get_user_prompt(&self, alias_map: Arc<Mutex<AliasesMapping>>) -> anyhow::Result<Value> {
         let mut lines = Vec::new();
-        
+        let mut user_ids = HashSet::new();
+    
         lines.push("最近的历史消息（按时间顺序，最新在最后）：".to_string());
         for msg in &self.sequence {
             if msg.time_valid(Duration::from_secs(1300)) {
-                lines.push(msg.format());
+                lines.push(msg.format(&mut user_ids));
             }
         }
         lines.pop();
         lines.push("".to_string());
         if let Some(latest) = self.sequence.back() {
             lines.push("你需要回复最新消息：".to_string());
-            lines.push(latest.format());
+            lines.push(latest.format(&mut user_ids));
         }
 
         lines.push("".to_string());
@@ -290,10 +373,18 @@ impl ChannelHistory {
         // lines.push("若需要，直接给出发送到群里的回复内容。".to_string());
         lines.push("直接给出发送到群里的回复内容。".to_string());
 
-        json!({
+        let aliases = alias_map.lock().unwrap().gets(user_ids);
+        let aliases = serde_json::to_string(&aliases)?;
+
+        let mut result = "用户的别称（用户的id代表唯一身份，但用户可能拥有多个别称，利用别称辨识聊天中人称的身份）:\n".to_string();
+        result += &aliases;
+        result += "\n\n";
+        result += &lines.join("\n");
+
+        Ok(json!({
             "role": "user",
-            "content": lines.join("\n")
-        })
+            "content": result
+        }))
     }
 }
 
@@ -315,17 +406,20 @@ pub enum ChatMsg {
 }
 
 impl ChatMsg {
-    fn format(&self) -> String {
+    fn format(&self, user_ids: &mut HashSet<usize>) -> String {
         match self {
             ChatMsg::Assistant { content, timestamp: _ } => format!("[BOT] {}", content),
-            ChatMsg::User { user, content, timestamp: _ } => format!(
-                "[User:{}|{}] {}",
-                user.user_id,
-                if let Some(card) = &user.card { card }
-                else if let Some(nickname) = &user.nickname { nickname }
-                else { "未设置名字的用户" },
-                content
-            ),
+            ChatMsg::User { user, content, timestamp: _ } => {
+                user_ids.insert(user.user_id);
+                format!(
+                    "[user_id:{}|nickname:{}] {}",
+                    user.user_id,
+                    if let Some(card) = &user.card { card }
+                    else if let Some(nickname) = &user.nickname { nickname }
+                    else { "未设置名字的用户" },
+                    content
+                )
+            },
             ChatMsg::Tool { name, content, timestamp: _ } => format!(
                 "[Tool:{}] {}",
                 name, content
@@ -352,5 +446,5 @@ impl ChatMsg {
             ChatMsg::User { user: _, content:_ , timestamp } => now - *timestamp <= dura,
             ChatMsg::Tool { name: _, content:_ , timestamp } => now - *timestamp <= dura
         }
-    } 
+    }
 }

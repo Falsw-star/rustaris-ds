@@ -1,10 +1,10 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration};
 
 use rust_mc_status::{McClient, ServerEdition};
 use serde_json::{Value, json};
 
 use async_trait::async_trait;
-use crate::{get_logger, get_poster, memory::{MemoryService, Scope}, objects::{Message, MessageArrayItem}};
+use crate::{get_logger, get_poster, memory::{MemoryService, Scope}, objects::{Message, MessageArrayItem}, thinking::AliasesMapping};
 
 
 
@@ -128,136 +128,6 @@ macro_rules! extract_optional {
     };
 }
 
-pub struct SaveMemoryTool {
-    pub mem_service: Arc<MemoryService>
-}
-
-#[async_trait]
-impl Tool for SaveMemoryTool {
-    fn name(&self) ->  &str {
-        "save_memory"
-    }
-    
-    fn description(&self) ->  &str {
-        "将信息存入长期记忆"
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "category": {
-                    "type": "string",
-                    "description": "本条记忆的大分类。如：user_preference | minecraft_server | event"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "用于精确更新或覆盖的唯一键"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "自然语言形式的记忆内容"
-                },
-                "metadata": {
-                    "type": "object",
-                    "description": "结构化附加信息。以额外键值对表征本条记忆的核心内容。",
-                    "properties": {
-                        "subject": {
-                            "type": "string",
-                            "description": "记忆的核心对象"
-                        },
-                        "tags": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "简短分类标签"
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "minimum": 0,
-                            "maximum": 1,
-                            "description": "对该记忆准确性的置信度"
-                        }
-                    },
-                    "required": ["subject", "confidence"],
-                    "additionalProperties": true,
-                }
-            },
-            "required": ["category", "key", "content"]
-        })
-    }
-
-    async fn call(&self, args: Value, msg: &Message) -> anyhow::Result<Value> {
-        if let Some(m) = extract_optional!(args, "metadata", as_object) {
-            println!("{:?}", m);
-        }
-        self.mem_service.upsert(
-            Scope::from(msg),
-            extract!(args, "category", as_str).as_str(),
-            extract!(args, "key", as_str).as_str(),
-            extract!(args, "content", as_str).as_str(),
-            if let Some(metadata) = extract_optional!(args, "metadata", as_object) {
-                Some(Value::from(metadata))
-            } else { None }
-        ).await?;
-        Ok(Value::String("保存成功".to_string()))
-    }
-}
-
-pub struct SearchMemoryTool {
-    pub mem_service: Arc<MemoryService>
-}
-
-#[async_trait]
-impl Tool for SearchMemoryTool {
-    fn name(&self) -> &str {
-        "search_memory"
-    }
-
-    fn description(&self) -> &str {
-        "查找记忆信息"
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "要搜索的准确唯一的关键词"
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
-    async fn call(&self, args: Value, msg: &Message) -> anyhow::Result<Value> {
-        let query = extract!(args, "query", as_array);
-        let query = query.iter().map(
-            |key| key.as_str().ok_or_else(|| anyhow::anyhow!("Error parsing key: {}", key))
-            .map(|s| s.to_string())
-        ).collect::<Result<Vec<_>, _>>()?;
-        
-        let mut array: Vec<Value> = Vec::new();
-        for key in &query {
-            let mems = self.mem_service.search(Scope::from(msg), key).await?;
-            if mems.len() == 0 {
-                array.push(json!({
-                    "keyword": key.clone(),
-                    "result": "没有找到任何结果"
-                }));
-            } else {
-                array.push(json!({
-                    "keyword": key.clone(),
-                    "result": mems.iter().map(|mem| {mem.format()}).collect::<Vec<Value>>()
-                }));
-            }
-        }
-        Ok(Value::String(Value::Array(array).to_string()))
-    }
-}
-
-
 pub struct MCSTool {
     client: McClient
 }
@@ -329,7 +199,7 @@ impl NeteaseMusicTool {
             client: reqwest::ClientBuilder::new()
                 .timeout(Duration::from_secs(10))
                 .build()?,
-            api_root: "http://192.168.3.38:8099".to_string()
+            api_root: std::env::var("NETEASE_API_ROOT").unwrap_or("http://192.168.3.38:8099".to_string())
         })
     }
 }
@@ -428,5 +298,308 @@ impl Tool for NeteaseMusicTool {
         };
 
         Ok(Value::String(send_result))
+    }
+}
+
+pub struct SearchNeteaseMusicTool {
+    client: reqwest::Client,
+    api_root: String
+}
+
+impl SearchNeteaseMusicTool {
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            client: reqwest::ClientBuilder::new()
+                .timeout(Duration::from_secs(10))
+                .build()?,
+            api_root: std::env::var("NETEASE_API_ROOT").unwrap_or("http://192.168.3.38:8099".to_string())
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for SearchNeteaseMusicTool {
+    fn name(&self) -> &str {
+        "search_music"
+    }
+
+    fn description(&self) -> &str {
+        "通过关键词搜索网易云的歌曲并返回信息"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": "要搜索的关键词，可以是歌曲名/音乐风格类型/专辑名"
+                }
+            },
+            "required": ["keyword"]
+        })
+    }
+
+    async fn call(&self, args: Value, _msg: &Message) -> anyhow::Result<Value> {
+        let keyword = extract!(args, "keyword", as_str);
+        let limit: usize = 5;
+
+        let array = self.client.post(format!("{}/search", self.api_root))
+            .json(&json!({
+                "keyword": keyword,
+                "limit": limit
+            })).send().await?.json::<Vec<Value>>().await?;
+
+        let mut result = Vec::<String>::new();
+
+        result.push(format!("找到 {} 个结果（最多 5 个结果）：", array.len()));
+        
+        for item in &array {
+            let mut song_info = Vec::<String>::new();
+
+            let name = extract!(item, "name", as_str);
+            song_info.push(format!("name: {}", name));
+            let song_id = extract!(item, "id", as_u64).to_string();
+            song_info.push(format!("id: {}", song_id));
+            let mut artists = Vec::<String>::new();
+            for artist in extract!(item, "artists", as_array) {
+                artists.push(extract!(artist, "name", as_str));
+            }
+            song_info.push(format!("artists: {}", artists.join(", ")));
+            let album_name = extract!(extract!(item, "album", as_object), "name", as_str);
+            song_info.push(format!("album: {}", album_name));
+
+            result.push(song_info.join("\n"));
+        }
+        
+        Ok(Value::String(result.join("\n\n")))
+    }
+}
+
+pub struct UpdateMemoryTool {
+    pub service: Arc<MemoryService>
+}
+
+#[async_trait]
+impl Tool for UpdateMemoryTool {
+    fn name(&self) -> &str {
+        "update_memory"
+    }
+
+    fn description(&self) -> &str {
+        "更新本条记忆"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "memories": {
+                    "type": "array",
+                    "description": "要更新的记忆列表",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "description": "记忆ID"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "更新后的记忆内容"
+                            },
+                            "confidence": {
+                                "type": "number",
+                                "description": "本条记忆的可信度。请依据之前的记忆增减。",
+                                "minimum": 0.0,
+                                "maximum": 1.0
+                            }
+                        },
+                        "required": ["id", "content", "confidence"]
+                    }
+                }
+            },
+            "required": ["memories"]
+        })
+    }
+
+    async fn call(&self, args: Value, _msg: &Message) -> anyhow::Result<Value> {
+
+        let memories = extract!(args, "memories", as_array);
+        let length = memories.len();
+
+        for item in memories {
+            let id = extract!(item, "id", as_i64) as i32;
+            let content = extract!(item, "content", as_str);
+            let confidence = extract!(item, "confidence", as_f64);
+            self.service.merge(id, &content, confidence).await?;
+        }
+
+        get_logger().info(&format!("更新了 {} 条记忆", length));
+
+        Ok(json!({}))
+    }
+}
+
+pub struct AddMemoryTool {
+    pub service: Arc<MemoryService>
+}
+
+
+#[async_trait]
+impl Tool for AddMemoryTool {
+    fn name(&self) -> &str {
+        "add_memory"
+    }
+
+    fn description(&self) -> &str {
+        "创建一条新的记忆"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "porperties": {
+                "content": {
+                    "type": "string",
+                    "description": "记忆内容"
+                }
+            },
+            "required": ["content"]
+        })
+    }
+
+    async fn call(&self, args: Value, msg: &Message) -> anyhow::Result<Value> {
+
+        let content = extract!(args, "content", as_str);
+        self.service.create(Scope::from(msg), &content).await?;
+
+        Ok(json!({}))
+    }
+}
+
+pub struct DeleteMemoryTool {
+    pub service: Arc<MemoryService>
+}
+
+#[async_trait]
+impl Tool for DeleteMemoryTool {
+    fn name(&self) -> &str {
+        "delete_memory"
+    }
+
+    fn description(&self) -> &str {
+        "删除本条记忆。慎用！"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "porperties": {
+                "memory_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer",
+                        "description": "要删除的记忆ID"
+                    }
+                }
+            },
+            "required": ["memory_ids"]
+        })
+    }
+
+    async fn call(&self, args: Value, _msg: &Message) -> anyhow::Result<Value> {
+
+        let ids = extract!(args, "ids", as_array);
+        let length = ids.len();
+
+        for id in ids {
+            if let Some(id) = id.as_i64() {
+                self.service.delete(id as i32).await?;
+            }
+        }
+
+        get_logger().info(&format!("更新了 {} 条记忆", length));
+        Ok(json!({}))
+    }
+}
+
+pub struct SearchMemoryTool {
+    pub service: Arc<MemoryService>
+}
+
+#[async_trait]
+impl Tool for SearchMemoryTool {
+    fn name(&self) -> &str {
+        "search_memory"
+    }
+
+    fn description(&self) -> &str {
+        "从记忆库中查找记忆"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": "要查找的关键词，可以是事件名|用户id|概念等"
+                }
+            },
+            "required": ["keyword"]
+        })
+    }
+
+    async fn call(&self, args: Value, msg: &Message) -> anyhow::Result<Value> {
+
+        let keyword = extract!(args, "keyword", as_str);
+        let similars = self.service.similars(Scope::from(msg), &keyword).await?;
+        let result = similars.iter().map(|mem| mem.simplified_plain())
+            .collect::<Vec<String>>().join("\n");
+
+        Ok(Value::String(result))
+    }
+}
+
+pub struct AddAliasTool {
+    pub map: Arc<Mutex<AliasesMapping>>
+}
+
+#[async_trait]
+impl Tool for AddAliasTool {
+    fn name(&self) -> &str {
+        "add_alias"
+    }
+    
+    fn description(&self) -> &str {
+        "添加记录某个用户的某个别称."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户id。由纯数字组成"
+                },
+                "alias": {
+                    "type": "string",
+                    "description": "要添加的别称"
+                }
+            },
+            "required": ["user_id", "alias"]
+        })
+    }
+
+    async fn call(&self, args: Value, _msg: &Message) -> anyhow::Result<Value> {
+
+        let user_id = extract!(args, "user_id", as_str).parse::<usize>()?;
+        let alias = extract!(args, "alias", as_str);
+
+        self.map.lock().unwrap().insert(user_id, alias.clone());
+
+        Ok(Value::String(format!("添加成功: {} -> {}", alias, user_id)))
     }
 }
