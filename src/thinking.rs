@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet, VecDeque}, fs, io::{Read, Write}, path::PathBuf, str::FromStr, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::{HashMap, HashSet, VecDeque}, sync::{Arc, Mutex}, time::Duration};
 
 use deepseek_api::{CompletionsRequestBuilder, DeepSeekClient, DeepSeekClientBuilder, RequestBuilder, request::{MessageRequest, ToolObject}, response::ModelType};
 use serde_json::{Value, json};
@@ -35,71 +35,12 @@ pub fn run(mut thinker: Thinker) -> (JoinHandle<()>, UnboundedSender<Message>) {
     }), tx)
 }
 
-pub struct AliasesMapping {
-    inner: HashMap<usize, HashSet<String>>
-}
-
-impl AliasesMapping {
-    pub fn new() -> Self {
-        let map_path = PathBuf::from_str("aliases_map.json").unwrap();
-        if map_path.exists() {
-            let mut buf = String::new();
-            fs::File::open(&map_path).expect("Cannot open aliases_map.json")
-                .read_to_string(&mut buf).expect("Cannot read aliases_map.json");
-            Self { inner: serde_json::from_str(&buf).expect("Cannot parse aliases_map.json") }
-        } else {
-            let mut map_file = fs::File::create_new(&map_path).unwrap();
-            write!(map_file, "{}", serde_json::to_string_pretty(&json!({}))
-                .expect("Failed to generate default aliases map"))
-                .expect("Failed to write default aliases map");
-            Self { inner: HashMap::new() }
-        }
-    }
-
-    pub fn save(&self) {
-        let map_path = PathBuf::from_str("aliases_map.json").unwrap();
-        let mut map_file = fs::File::create(&map_path).expect("Cannot create aliases_map.json");
-        write!(map_file, "{}", serde_json::to_string_pretty(&self.inner)
-            .expect("Failed to serialize aliases map"))
-            .expect("Failed to write aliases map");
-    }
-
-    pub fn insert(&mut self, user_id: usize, alias: String) {
-        if let Some(aliases) = self.inner.get_mut(&user_id) {
-            aliases.insert(alias);
-        } else {
-            let mut aliases = HashSet::new();
-            aliases.insert(alias);
-            self.inner.insert(user_id, aliases);
-        }
-    }
-
-    pub fn get(&self, user_id: usize) -> Option<Vec<String>> {
-        if let Some(aliases) = self.inner.get(&user_id) {
-            Some(aliases.iter().map(|m| m.to_owned()).collect::<Vec<_>>())
-        } else {
-            None
-        }
-    }
-
-    pub fn gets(&self, user_ids: HashSet<usize>) -> HashMap<usize, Vec<String>> {
-        let mut result = HashMap::new();
-        for user_id in user_ids {
-            if let Some(aliases) = self.get(user_id) {
-                result.insert(user_id, aliases);
-            }
-        }
-        result
-    }
-}
-
 pub struct Thinker {
     pub client: DeepSeekClient,
     pub tools: ToolRegistry,
     pub channels: HashMap<ChannelID, ChannelHistory>,
     pub dozer: Dozer,
     pub status: Arc<Mutex<bool>>,
-    pub alia_map: Arc<Mutex<AliasesMapping>>
 }
 
 impl Thinker {
@@ -111,15 +52,12 @@ impl Thinker {
         tools.register(NeteaseMusicTool::new()?);
         tools.register(SearchNeteaseMusicTool::new()?);
 
-        let alia_map = Arc::new(Mutex::new(AliasesMapping::new()));
-
         Ok(Self {
             client: DeepSeekClientBuilder::new(std::env::var("API_KEY")?).build()?,
             tools: tools,
             channels: HashMap::new(),
-            dozer: Dozer::new(mem_service.clone(), alia_map.clone()),
+            dozer: Dozer::new(mem_service.clone()),
             status: Arc::new(Mutex::new(true)),
-            alia_map: alia_map
         })
     }
 
@@ -146,10 +84,7 @@ impl Thinker {
                     }
                 }
                 _ = sleep(Duration::from_millis(100)) => {
-                    if !*self.status.lock().unwrap() {
-                        self.alia_map.lock().unwrap().save();
-                        return;
-                    }
+                    if !*self.status.lock().unwrap() { return; }
                 }
             }
         }
@@ -199,7 +134,7 @@ impl Thinker {
 
                 let mut messages: Vec<MessageRequest> = vec![
                     serde_json::from_value(Thinker::get_system_msg())?,
-                    serde_json::from_value(history.get_user_prompt(self.alia_map.clone())?)?
+                    serde_json::from_value(history.get_user_prompt()?)?
                 ];
 
                 let tools = self.tools.format_for_openai_api().iter().map(|tool| {
@@ -290,9 +225,6 @@ impl Thinker {
 - 用户表达了长期偏好
 - 用户定义了某种配置或关系
 - 信息具有未来再次被引用的可能性
-当出现以下情况时，调用 `add_alias` 工具添加对用户的别称：
-- 用户明确要求记住自己的身份
-- 用户的nickname没有被保存在aliases中
 
 不要存储：
 - 闲聊
@@ -364,7 +296,7 @@ impl ChannelHistory {
         if self.sequence.len() > 20 { self.sequence.pop_front(); }
     }
 
-    fn get_user_prompt(&self, alias_map: Arc<Mutex<AliasesMapping>>) -> anyhow::Result<Value> {
+    fn get_user_prompt(&self) -> anyhow::Result<Value> {
         let mut lines = Vec::new();
         let mut user_ids = HashSet::new();
     
@@ -388,17 +320,9 @@ impl ChannelHistory {
         // lines.push("若需要，直接给出发送到群里的回复内容。".to_string());
         lines.push("直接给出发送到群里的回复内容。".to_string());
 
-        let aliases = alias_map.lock().unwrap().gets(user_ids);
-        let aliases = serde_json::to_string(&aliases)?;
-
-        let mut result = "用户的别称（用户的id代表唯一身份，但用户可能拥有多个别称，利用别称辨识聊天中人称的身份）:\n".to_string();
-        result += &aliases;
-        result += "\n\n";
-        result += &lines.join("\n");
-
         Ok(json!({
             "role": "user",
-            "content": result
+            "content": lines.join("\n")
         }))
     }
 }

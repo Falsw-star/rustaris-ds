@@ -139,7 +139,7 @@ mod memory_tests {
     use std::{collections::HashMap, sync::{Arc, Mutex}};
     use tokio::{time::{sleep, Duration}};
     use rustaris_ds::{
-        POSTER, SELFID, adapters::{APIRequest, APIWrapper}, logging::LoggerProvider, memory::{Dozer, MemoryService, Scope}, objects::{Group, Message, MessageArrayItem, Permission, User}, thinking::{AliasesMapping, Thinker}, tools::ToolRegistry
+        POSTER, SELFID, adapters::{APIRequest, APIWrapper}, logging::LoggerProvider, memory::{Dozer, MemoryService, Scope}, objects::{Group, Message, MessageArrayItem, Permission, User}, thinking::Thinker, tools::ToolRegistry
     };
     use deepseek_api::DeepSeekClientBuilder;
 
@@ -198,16 +198,13 @@ mod memory_tests {
         tools.register(rustaris_ds::tools::UpdateMemoryTool { service: mem_service.clone() });
         tools.register(rustaris_ds::tools::DeleteMemoryTool { service: mem_service.clone() });
 
-        let alia_map = Arc::new(Mutex::new(AliasesMapping::new()));
-
         Ok(Thinker {
             client: DeepSeekClientBuilder::new(std::env::var("API_KEY")?)
                 .build()?,
             tools,
             channels: HashMap::new(),
-            dozer: Dozer::new(mem_service, alia_map.clone()),
+            dozer: Dozer::new(mem_service),
             status: Arc::new(Mutex::new(true)),
-            alia_map: alia_map
         })
     }
 
@@ -273,8 +270,6 @@ mod memory_tests {
             println!("  内容: '{}', 置信度: {:.2}", memory.content, memory.confidence);
         }
 
-        thinker.alia_map.lock().unwrap().save();
-
         println!("\n=== AI 记忆存储和检索测试完成 ===");
         Ok(())
     }
@@ -328,8 +323,6 @@ mod memory_tests {
         for memory in &hobby_memories {
             println!("  内容: '{}', 置信度: {:.2}", memory.content, memory.confidence);
         }
-
-        thinker.alia_map.lock().unwrap().save();
 
         println!("\n=== AI 记忆总结和提取测试完成 ===");
         Ok(())
@@ -394,8 +387,6 @@ mod memory_tests {
             println!("  内容: '{}', 置信度: {:.2}", memory.content, memory.confidence);
         }
 
-        thinker.alia_map.lock().unwrap().save();
-
         println!("\n=== AI 记忆置信度管理测试完成 ===");
         Ok(())
     }
@@ -454,8 +445,6 @@ mod memory_tests {
         for memory in &updated_memories {
             println!("  内容: '{}', 置信度: {:.2}", memory.content, memory.confidence);
         }
-
-        thinker.alia_map.lock().unwrap().save();
 
         println!("\n=== 记忆工具交互测试完成 ===");
         Ok(())
@@ -518,8 +507,6 @@ mod memory_tests {
             println!("  {}: 内容: '{}', 置信度: {:.2}", i+1, memory.content, memory.confidence);
         }
 
-        thinker.alia_map.lock().unwrap().save();
-
         println!("\n=== 长期记忆一致性测试完成 ===");
         Ok(())
     }
@@ -567,8 +554,6 @@ mod memory_tests {
                 println!("    - '{}'", memory.content);
             }
         }
-
-        thinker.alia_map.lock().unwrap().save();
 
         println!("\n=== 记忆召回准确度测试完成 ===");
         Ok(())

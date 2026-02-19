@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration, usize};
+use std::{collections::HashMap, sync::Arc, time::Duration, usize};
 
 use chrono::{DateTime, Utc};
 use deepseek_api::{CompletionsRequestBuilder, DeepSeekClient, RequestBuilder, request::{MessageRequest, ToolObject, UserMessageRequest}, response::ModelType};
@@ -7,17 +7,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 
-use crate::{DEV, get_logger, objects::{Group, Message, Permission, User}, self_id, thinking::AliasesMapping, tools::{AddMemoryTool, DeleteMemoryTool, ToolRegistry, UpdateMemoryTool}};
+use crate::{DEV, get_logger, objects::{Group, Message, Permission, User}, self_id, tools::{AddMemoryTool, DeleteMemoryTool, ToolRegistry, UpdateMemoryTool}};
 
 pub struct Dozer {
     pub temp: HashMap<Scope, Vec<Message>>,
     pub mem_service: Arc<MemoryService>,
     pub mem_tools: ToolRegistry,
-    pub alia_map: Arc<Mutex<AliasesMapping>>
 }
 
 impl Dozer {
-    pub fn new(service: Arc<MemoryService>, map: Arc<Mutex<AliasesMapping>>) -> Self {
+    pub fn new(service: Arc<MemoryService>) -> Self {
 
         let mut tools = ToolRegistry::new();
         tools.register(UpdateMemoryTool { service: service.clone() });
@@ -28,7 +27,6 @@ impl Dozer {
             temp: HashMap::new(),
             mem_service: service,
             mem_tools: tools,
-            alia_map: map
         }
     }
 

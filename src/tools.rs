@@ -1,10 +1,10 @@
-use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use rust_mc_status::{McClient, ServerEdition};
 use serde_json::{Value, json};
 
 use async_trait::async_trait;
-use crate::{get_logger, get_poster, memory::{MemoryService, Scope}, objects::{Message, MessageArrayItem}, thinking::AliasesMapping};
+use crate::{get_logger, get_poster, memory::{MemoryService, Scope}, objects::{Message, MessageArrayItem}};
 
 
 
@@ -559,47 +559,5 @@ impl Tool for SearchMemoryTool {
             .collect::<Vec<String>>().join("\n");
 
         Ok(Value::String(result))
-    }
-}
-
-pub struct AddAliasTool {
-    pub map: Arc<Mutex<AliasesMapping>>
-}
-
-#[async_trait]
-impl Tool for AddAliasTool {
-    fn name(&self) -> &str {
-        "add_alias"
-    }
-    
-    fn description(&self) -> &str {
-        "添加记录某个用户的某个别称."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "用户id。由纯数字组成"
-                },
-                "alias": {
-                    "type": "string",
-                    "description": "要添加的别称"
-                }
-            },
-            "required": ["user_id", "alias"]
-        })
-    }
-
-    async fn call(&self, args: Value, _msg: &Message) -> anyhow::Result<Value> {
-
-        let user_id = extract!(args, "user_id", as_str).parse::<usize>()?;
-        let alias = extract!(args, "alias", as_str);
-
-        self.map.lock().unwrap().insert(user_id, alias.clone());
-
-        Ok(Value::String(format!("添加成功: {} -> {}", alias, user_id)))
     }
 }
