@@ -3,7 +3,9 @@ use std::{collections::{HashMap, HashSet, VecDeque}, fs, io::{Read, Write}, path
 use deepseek_api::{CompletionsRequestBuilder, DeepSeekClient, DeepSeekClientBuilder, RequestBuilder, request::{MessageRequest, ToolObject}, response::ModelType};
 use serde_json::{Value, json};
 
-use tokio::{select, spawn, sync::mpsc::{UnboundedReceiver, UnboundedSender}, task::JoinHandle, time::{Instant, sleep}};
+use chrono::Timelike;
+
+use tokio::{select, spawn, sync::mpsc::{UnboundedReceiver, UnboundedSender}, task::JoinHandle, time::{Instant, interval, sleep}};
 use crate::{get_logger, get_poster, memory::{Dozer, MemoryService}, objects::{Message, User}, self_id, tools::{MCSTool, NeteaseMusicTool, SearchNeteaseMusicTool, ToolRegistry}};
 
 const SCORE_MAP: &[(&str, usize)] = &[
@@ -123,11 +125,24 @@ impl Thinker {
 
     pub async fn run(&mut self, mut receiver: UnboundedReceiver<Message>) {
         let logger = get_logger();
+
+        let mut task_timer = interval(Duration::from_mins(1));
+
         while *self.status.lock().unwrap() {
             select! {
                 Some(msg) = receiver.recv() => {
                     if let Err(err) = self.resolve(msg).await {
                         logger.error(&format!("Error resolve msg: {}", err));
+                    }
+                }
+                _ = task_timer.tick() => {
+                    let now = chrono::Local::now();
+                    if (now.hour() == 12 && now.minute() == 0)
+                    || (now.hour() == 3  && now.minute() == 0) {
+                        logger.info("Starting Dozing Task...");
+                        if let Err(err) = self.doze().await {
+                            logger.error(&format!("Error in dozing task: {}", err));
+                        };
                     }
                 }
                 _ = sleep(Duration::from_millis(100)) => {
