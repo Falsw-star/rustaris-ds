@@ -142,9 +142,8 @@ impl Dozer {
 请将新的记忆与旧的记忆比对分析。
 如果新记忆与旧记忆发生矛盾或对旧记忆产生否定，以新的记忆为准，调用 `update_memory` 工具，订正记忆，##删除错误记忆##，用新记忆取代，并降低confidence;
 如果新记忆可以对旧记忆做出补充和证明，调用 `update_memory` 工具，更新记忆，并适当提高confidence;
+如果旧记忆之间关联性很大，应当将信息较少的记忆整合到信息较多的记忆中去，并调用 `delete_memory` 工具，删除被整合的短记忆;
 注意：不要提到新旧记忆的关系，仅对内容做出覆盖更新。
-注意：补充和订正在一次工具调用中进行。
-如果旧记忆的confidence较低且认为旧记忆质量很低、没有价值、无法取得有效信息，请调用 `delete_memory` 工具，删除记忆;
 如果旧记忆为空或没有与新记忆相似的信息，调用 `add_memory` 工具，将新记忆作为一条全新记忆存储;
 如果新记忆中没有有价值的信息，你可以选择不调用工具，但不建议你这样做，因为信息已经经过筛选。
                                 "#.to_string());
@@ -289,8 +288,8 @@ impl MemoryService {
     }
 
     pub async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        let resp = self.client.post("https://open.bigmodel.cn/api/paas/v4/embeddings")
-            .header("Authorization", "Bearer 5b217f215aaf215ac39216ea63867870.5jN0pvlI0lTGazeB")
+        let resp = self.client.post(std::env::var("EMBED_API_ROOT").expect("No embedding api root provided"))
+            .header("Authorization", format!("Bearer {}", std::env::var("EMBED_API_KEY").expect("No embedding api key provided")))
             .json(&json!({
                 "model": "embedding-3",
                 "input": text,

@@ -77,7 +77,7 @@ impl Thinker {
                     let now = chrono::Local::now();
                     if (now.hour() == 12 && now.minute() == 0)
                     || (now.hour() == 3  && now.minute() == 0) {
-                        logger.info("Starting Dozing Task...");
+                        logger.info("Starting dozing task...");
                         if let Err(err) = self.doze().await {
                             logger.error(&format!("Error in dozing task: {}", err));
                         };
